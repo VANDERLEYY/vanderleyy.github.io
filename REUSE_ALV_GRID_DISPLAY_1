@@ -1,0 +1,897 @@
+REPORT zfir0129.
+
+TABLES: t001, bsid, bkpf, kna1.
+
+TYPES:
+  BEGIN OF ty_output,
+    icon        TYPE char04,
+    bukrs       TYPE bsid-bukrs,
+    kunnr       TYPE bsid-kunnr,
+    name1       TYPE kna1-name1,
+    stcd1       TYPE kna1-stcd1,
+    stcd2       TYPE kna1-stcd2,
+    stras       TYPE kna1-stras,
+    belnr       TYPE bsid-belnr,
+    monat       TYPE bsid-monat,
+    gjahr       TYPE bsid-gjahr,
+    buzei       TYPE bsid-buzei,
+    budat       TYPE bsid-budat,
+    bldat       TYPE bsid-bldat,
+    xblnr       TYPE bsid-xblnr,
+    zuonr       TYPE bsid-zuonr,
+    sgtxt       TYPE bsid-sgtxt,
+    wrbtr       TYPE bsid-wrbtr,
+    zfbdt       TYPE bsid-zfbdt,
+    matnr       TYPE makt-matnr,
+    maktx       TYPE makt-maktx,
+    zlsch       TYPE bsid-zlsch,
+    ltext       TYPE t003t-ltext,
+    blart       TYPE bsid-blart,
+    hbkid       TYPE bsid-hbkid,
+    hktid       TYPE bsid-hktid,
+    vbeln       TYPE bsid-vbeln,
+    selected(1),
+  END OF ty_output.
+
+TYPES: BEGIN OF ty_kunnr,
+         kunnr TYPE kunnr,
+         count TYPE i.
+TYPES: END OF ty_kunnr.
+
+*----------------------------------------------------------------------*
+* Processa Mensagem em Tela.
+*----------------------------------------------------------------------*
+DEFINE f_progressbar.
+  CALL FUNCTION 'SAPGUI_PROGRESS_INDICATOR'
+     EXPORTING
+       percentage = 40
+       text       = &1.
+END-OF-DEFINITION.
+
+*----------------------------------------------------------------------*
+**-------------------------- Ranges ----------------------------------**
+*----------------------------------------------------------------------*
+RANGES: r_vbeln FOR vbrk-vbeln.
+
+*----------------------------------------------------------------------*
+**-----------------Declaração de Tabela Interna-----------------------**
+*----------------------------------------------------------------------*
+DATA: t_bsid       TYPE TABLE OF bsid,
+      t_bkpf       TYPE TABLE OF bkpf,
+      t_vbrp       TYPE TABLE OF vbrp,
+      t_vbrk       TYPE TABLE OF vbrk,
+      t_kna1       TYPE TABLE OF kna1,
+      t_t003t      TYPE TABLE OF t003t,
+      t_t042zt     TYPE TABLE OF t042zt,
+      t_zfit0037   TYPE TABLE OF zfit0037,
+      t_output     TYPE TABLE OF ty_output,
+      t_output_sel TYPE TABLE OF ty_output,
+      t_kunnr_sel  TYPE TABLE OF ty_kunnr.
+
+DATA: t_msg_aux    TYPE rs_t_msg.
+*----------------------------------------------------------------------*
+**-----------------Declaração de Tabela Interna-----------------------**
+*----------------------------------------------------------------------*
+DATA: w_bsid       TYPE bsid,
+      w_bkpf       TYPE bkpf,
+      w_kna1       TYPE kna1,
+      w_vbrp       TYPE vbrp,
+      w_vbrk       TYPE vbrk,
+      w_t003t      TYPE t003t,
+      w_t042zt     TYPE t042zt,
+      w_zfit0037   TYPE zfit0037,
+      w_tabix      TYPE sy-tabix,
+      w_output     TYPE ty_output,
+      w_output_sel TYPE ty_output,
+      w_kunnr_sel  TYPE ty_kunnr.
+
+*----------------------------------------------------------------------*
+**---------------------Apresentação de Relatório----------------------**
+*----------------------------------------------------------------------*
+DATA:  gt_field_catalog TYPE lvc_t_fcat,
+       gt_print         TYPE slis_print_alv,
+       gt_layout        TYPE slis_layout_alv,
+       gs_settings      TYPE lvc_s_glay,
+       gt_fieldcat      TYPE slis_t_fieldcat_alv WITH HEADER LINE,
+       gt_sort          TYPE slis_t_sortinfo_alv WITH HEADER LINE.
+
+CONSTANTS:
+  c_x                TYPE c VALUE 'X',
+  gc_zf_status_gui   TYPE slis_formname VALUE 'ZF_STATUS_GUI',
+  gc_zf_user_command TYPE slis_formname VALUE 'ZF_USER_COMMAND'.
+
+*----------------------------------------------------------------------*
+*   Parâmetros de seleção
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+
+PARAMETERS: p_bukrs TYPE t001-bukrs OBLIGATORY.
+
+SELECT-OPTIONS: p_kunnr FOR kna1-kunnr,
+                p_blart FOR bsid-blart,
+                p_belnr FOR bsid-belnr,
+                p_budat FOR bsid-budat,
+                p_zfbdt FOR bsid-zfbdt.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+*-----------------------------------------------------------------------
+*------------- Lógica Central do Programa ------------------------------
+*-----------------------------------------------------------------------
+START-OF-SELECTION.
+
+  PERFORM f_logica_central.
+
+*&---------------------------------------------------------------------*
+*&      Form  F_LOGICA_CENTRAL
+*&---------------------------------------------------------------------*
+FORM f_logica_central .
+
+  " Valida dados em tela.
+  PERFORM f_valida.
+
+  " Seleciona Partida
+  PERFORM f_selecao.
+
+  IF t_bsid[] IS NOT INITIAL.
+
+    " Monta Dados
+    PERFORM f_monta.
+
+    " Apresenta Relatório
+    PERFORM f_relatorio.
+
+  ELSE.
+
+    MESSAGE 'Não localizou nenhum documento com critério de seleção, verifique!' TYPE 'S' DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+    CALL SELECTION-SCREEN 1000.
+
+  ENDIF.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_VALIDA
+*&---------------------------------------------------------------------*
+FORM f_valida .
+
+  f_progressbar 'Validando dados de Tela Seleção... Aguarde!!'.
+
+  "Verifica seleção de tela - Data de Lançamneto ou Vencimento
+  IF p_budat IS INITIAL AND
+     p_zfbdt IS INITIAL.
+
+    MESSAGE 'Obrigatório preencher Data de Lançamento ou Vencimento!' TYPE 'S' DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+    CALL SELECTION-SCREEN 1000.
+
+  ENDIF.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_SELECAO
+*&---------------------------------------------------------------------*
+FORM f_selecao .
+
+  DATA: l_venc TYPE bsid-zfbdt.
+
+  f_progressbar 'Selecionando dados... Aguarde!!'.
+
+  " Seleciona partida em aberto de cliente
+  IF p_budat IS NOT INITIAL.
+
+    SELECT *
+      FROM bsid
+      INTO CORRESPONDING FIELDS OF TABLE t_bsid
+      WHERE bukrs EQ p_bukrs
+        AND kunnr IN p_kunnr
+        AND belnr IN p_belnr
+        AND budat IN p_budat
+        AND blart IN p_blart
+        AND umsks EQ space
+        AND shkzg EQ 'S'.
+
+  ELSE.
+
+    SELECT *
+      FROM bsid
+      INTO CORRESPONDING FIELDS OF TABLE t_bsid
+      WHERE bukrs EQ p_bukrs
+        AND kunnr IN p_kunnr
+        AND belnr IN p_belnr
+        AND blart IN p_blart
+        AND umsks EQ space
+        AND shkzg EQ 'S'.
+
+  ENDIF.
+
+  "Verifica se existe parâmetro de vencimento (Tela)
+  IF p_zfbdt IS NOT INITIAL.
+
+    LOOP AT t_bsid INTO w_bsid.
+      "Verifica posição do Loop
+      w_tabix = sy-tabix.
+      "Acha vencimento correto
+      l_venc = w_bsid-zfbdt + w_bsid-zbd1t.
+      "Verifica se está dentro do processo de extração
+      IF l_venc NOT IN p_zfbdt.
+        DELETE t_bsid INDEX w_tabix.
+      ENDIF.
+      CLEAR w_bsid.
+    ENDLOOP.
+
+  ENDIF.
+
+  IF t_bsid[] IS NOT INITIAL.
+
+    f_progressbar 'Verificando se existe estorno... Aguarde!!'.
+
+    " Verifica se a partida foi estornada.
+    SELECT *
+      FROM bkpf
+      INTO CORRESPONDING FIELDS OF TABLE t_bkpf
+      FOR ALL ENTRIES IN t_bsid
+      WHERE bukrs EQ t_bsid-bukrs
+        AND belnr EQ t_bsid-belnr
+        AND gjahr EQ t_bsid-gjahr
+        AND stblg EQ space.
+
+    IF sy-subrc EQ 0.
+
+      "Elimina partida estornada da memória.
+      LOOP AT t_bsid INTO w_bsid.
+        "Verifica posição do Loop
+        w_tabix = sy-tabix.
+
+        READ TABLE t_bkpf INTO w_bkpf WITH KEY bukrs = w_bsid-bukrs
+                                               belnr = w_bsid-belnr
+                                               gjahr = w_bsid-gjahr.
+        IF sy-subrc NE 0.
+          "Elimina partida da memoria caso não existe na BKPF.
+          DELETE t_bsid INDEX w_tabix.
+
+        ELSE.
+
+          r_vbeln-sign   = 'I'.
+          r_vbeln-option = 'EQ'.
+          r_vbeln-low = w_bkpf-awkey.
+
+          APPEND r_vbeln.
+
+        ENDIF.
+
+        CLEAR: w_bsid, w_bkpf.
+
+      ENDLOOP.
+
+    ENDIF.
+
+  ENDIF.
+
+  " Busca Código de Material e Descrição
+  IF r_vbeln[] IS NOT INITIAL.
+
+    f_progressbar 'Buscando dados de Material... Aguarde!!'.
+
+    " Busca descrição de Forma de Pagto
+    SELECT *
+      FROM t042zt
+      INTO CORRESPONDING FIELDS OF TABLE t_t042zt
+      FOR ALL ENTRIES IN t_bsid
+      WHERE spras EQ 'P'
+        AND land1 EQ 'BR'
+        AND zlsch EQ t_bsid-zlsch.
+
+    " Busca descrição de Tipo de Documento
+    SELECT *
+      FROM t003t
+      INTO CORRESPONDING FIELDS OF TABLE t_t003t
+      FOR ALL ENTRIES IN t_bsid
+      WHERE spras EQ 'P'
+        AND blart EQ t_bsid-blart.
+
+    " Busca dado mestre de cliente.
+    SELECT *
+      FROM kna1
+      INTO CORRESPONDING FIELDS OF TABLE t_kna1
+      FOR ALL ENTRIES IN t_bsid
+      WHERE kunnr EQ t_bsid-kunnr.
+
+    " Cabeçalho documento estorno
+    SELECT *
+      FROM vbrk
+      INTO CORRESPONDING FIELDS OF TABLE t_vbrk
+      WHERE vbeln IN r_vbeln
+        AND sfakn EQ space.
+
+    " Verifica item do processamento.
+    SELECT *
+      FROM vbrp
+      INTO CORRESPONDING FIELDS OF TABLE t_vbrp
+      WHERE vbeln IN r_vbeln.
+
+    " Localiza Banco Empresa do processamento
+    SELECT *
+      FROM zfit0037
+      INTO CORRESPONDING FIELDS OF TABLE t_zfit0037
+      FOR ALL ENTRIES IN t_vbrp
+      WHERE matnr EQ t_vbrp-matnr.
+
+  ENDIF.
+
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_MONTA
+*&---------------------------------------------------------------------*
+FORM f_monta .
+
+  f_progressbar 'Montando dados de memória... Aguarde!!'.
+
+  LOOP AT t_bsid INTO w_bsid.
+
+    READ TABLE t_bkpf INTO w_bkpf WITH KEY bukrs = w_bsid-bukrs
+                                           belnr = w_bsid-belnr
+                                           gjahr = w_bsid-gjahr.
+
+    IF sy-subrc EQ 0.
+
+      READ TABLE t_vbrk INTO w_vbrk WITH KEY vbeln = w_bkpf-awkey.
+
+      IF sy-subrc EQ 0.
+
+        READ TABLE t_vbrp INTO w_vbrp WITH KEY vbeln = w_vbrk-vbeln.
+
+        w_output-matnr = w_vbrp-matnr.
+        w_output-maktx = w_vbrp-arktx.
+
+        READ TABLE t_zfit0037 INTO w_zfit0037 WITH KEY matnr = w_vbrp-matnr.
+
+        w_output-hbkid = w_zfit0037-hbkid.
+        w_output-hktid = w_zfit0037-hktid.
+
+      ENDIF.
+
+    ENDIF.
+
+    w_output-icon  = icon_led_yellow.
+    w_output-bukrs = w_bsid-bukrs.
+    w_output-belnr = w_bsid-belnr.
+    w_output-monat = w_bsid-monat.
+    w_output-gjahr = w_bsid-gjahr.
+    w_output-buzei = w_bsid-buzei.
+    w_output-bldat = w_bsid-bldat.
+    w_output-budat = w_bsid-budat.
+    w_output-xblnr = w_bsid-xblnr.
+    w_output-zuonr = w_bsid-zuonr.
+    w_output-sgtxt = w_bsid-sgtxt.
+    w_output-wrbtr = w_bsid-wrbtr.
+    w_output-zfbdt = w_bsid-zfbdt + w_bsid-zbd1t.
+    w_output-zlsch = w_bsid-zlsch.
+    w_output-kunnr = w_bsid-kunnr.
+    w_output-vbeln = w_bsid-vbeln.
+
+    READ TABLE t_kna1 INTO w_kna1 WITH KEY kunnr = w_bsid-kunnr.
+
+    w_output-name1 = w_kna1-name1.
+    w_output-stcd1 = w_kna1-stcd1.
+    w_output-stcd2 = w_kna1-stcd2.
+    w_output-stras = w_kna1-stras.
+
+    READ TABLE t_t003t INTO w_t003t WITH KEY blart = w_bsid-blart.
+
+    w_output-blart = w_bsid-blart.
+    w_output-ltext = w_t003t-ltext.
+
+    READ TABLE t_t042zt INTO w_t042zt WITH KEY zlsch = w_bsid-zlsch.
+
+    w_output-ltext = w_t042zt-text2.
+
+    APPEND w_output TO t_output.
+
+    CLEAR: w_t042zt, w_t003t, w_kna1, w_zfit0037,
+           w_vbrp, w_vbrk, w_bkpf.
+
+  ENDLOOP.
+
+  SORT t_output BY kunnr.
+
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_RELATORIO
+*&---------------------------------------------------------------------*
+FORM f_relatorio .
+
+  STATICS t_fcat TYPE slis_t_fieldcat_alv.
+
+  f_progressbar 'Apresentando relatório... Aguarde!!'.
+
+  SORT t_output BY bukrs belnr buzei gjahr.
+
+  gt_layout-colwidth_optimize    = 'X'.
+  gt_layout-zebra                = 'X'.  "Layout Zebra
+  gt_layout-expand_all           = 'X'.  "Abrir subitens
+  gt_layout-box_fieldname        = 'SELECTED'.
+  gt_layout-detail_popup         = abap_true.
+  gt_layout-detail_initial_lines = abap_true.
+
+  gt_print-no_print_listinfos    = abap_true.
+  gs_settings-edt_cll_cb         = abap_true.
+
+  PERFORM zf_fieldcat_build CHANGING t_fcat.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program       = sy-cprog
+      i_callback_user_command  = gc_zf_user_command
+      i_default                = abap_true
+      i_grid_settings          = gs_settings
+      is_print                 = gt_print
+      i_callback_pf_status_set = gc_zf_status_gui
+      is_layout                = gt_layout
+      it_fieldcat              = t_fcat "gt_fieldcat[]
+      i_save                   = 'X' "'A'
+    TABLES
+      t_outtab                 = t_output.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  ZF_FIELDCAT_BUILD
+*&---------------------------------------------------------------------*
+FORM zf_fieldcat_build CHANGING t_fcat TYPE slis_t_fieldcat_alv.
+
+  FIELD-SYMBOLS <w_fcat> TYPE slis_fieldcat_alv.
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'ICON'.
+  <w_fcat>-seltext_s = 'Status'. "10
+  <w_fcat>-seltext_m = 'Status'. "20
+  <w_fcat>-seltext_l = 'Status'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BUKRS'.
+  <w_fcat>-seltext_s = 'Empresa'. "10
+  <w_fcat>-seltext_m = 'Empresa'. "20
+  <w_fcat>-seltext_l = 'Empresa'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'KUNNR'.
+  <w_fcat>-seltext_s = 'Cod. BP'. "10
+  <w_fcat>-seltext_m = 'Código BP'. "20
+  <w_fcat>-seltext_l = 'Código do BP'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'NAME1'.
+  <w_fcat>-seltext_s = 'Razão BP'. "10
+  <w_fcat>-seltext_m = 'Razão Soc. BP'. "20
+  <w_fcat>-seltext_l = 'Razão Social BP'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'STCD1'.
+  <w_fcat>-seltext_s = 'CNPJ'. "10
+  <w_fcat>-seltext_m = 'CNPJ'. "20
+  <w_fcat>-seltext_l = 'CNPJ'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'STCD2'.
+  <w_fcat>-seltext_s = 'CPF'. "10
+  <w_fcat>-seltext_m = 'CPF'. "20
+  <w_fcat>-seltext_l = 'CPF'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'STRAS'.
+  <w_fcat>-seltext_s = 'Endereço'. "10
+  <w_fcat>-seltext_m = 'Endereço'. "20
+  <w_fcat>-seltext_l = 'Endereço'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'VBELN'.
+  <w_fcat>-seltext_s = 'Doc. Cont.Vendas'. "10
+  <w_fcat>-seltext_m = 'Nº documento Vendas'. "20
+  <w_fcat>-seltext_l = 'Nº documento de vendas'. "40
+
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BELNR'.
+  <w_fcat>-seltext_s = 'Doc. Cont.'. "10
+  <w_fcat>-seltext_m = 'Documento Contábil'. "20
+  <w_fcat>-seltext_l = 'Documento Contábil'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'MONAT'.
+  <w_fcat>-seltext_s = 'Período'. "10
+  <w_fcat>-seltext_m = 'Período Contábil'. "20
+  <w_fcat>-seltext_l = 'Período Contábil'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'GJAHR'.
+  <w_fcat>-seltext_s = 'Exercício'. "10
+  <w_fcat>-seltext_m = 'Exercício'. "20
+  <w_fcat>-seltext_l = 'Exercício'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BUZEI'.
+  <w_fcat>-seltext_s = 'Item'. "10
+  <w_fcat>-seltext_m = 'Item Contábil'. "20
+  <w_fcat>-seltext_l = 'Item Contábil'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BUDAT'.
+  <w_fcat>-seltext_s = 'Dt Lanc'. "10
+  <w_fcat>-seltext_m = 'Data Lançamento'. "20
+  <w_fcat>-seltext_l = 'Data de Lançamento'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BLDAT'.
+  <w_fcat>-seltext_s = 'Dt Doc'. "10
+  <w_fcat>-seltext_m = 'Data Documento'. "20
+  <w_fcat>-seltext_l = 'Data do Documento'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'XBLNR'.
+  <w_fcat>-seltext_s = 'Referência'. "10
+  <w_fcat>-seltext_m = 'Referência'. "20
+  <w_fcat>-seltext_l = 'Referência'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'ZUONR'.
+  <w_fcat>-seltext_s = 'Atribuição'. "10
+  <w_fcat>-seltext_m = 'Atribuição'. "20
+  <w_fcat>-seltext_l = 'Atribuição'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'SGTXT'.
+  <w_fcat>-seltext_s = 'Texto'. "10
+  <w_fcat>-seltext_m = 'Texto Contábil'. "20
+  <w_fcat>-seltext_l = 'Texto Contábil'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'WRBTR'.
+  <w_fcat>-seltext_s = 'Montante'. "10
+  <w_fcat>-seltext_m = 'Montante'. "20
+  <w_fcat>-seltext_l = 'Montante'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'ZFBDT'.
+  <w_fcat>-seltext_s = 'Dt Venc'. "10
+  <w_fcat>-seltext_m = 'Data Vencimento'. "20
+  <w_fcat>-seltext_l = 'Data de Vencimento'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'MATNR'.
+  <w_fcat>-seltext_s = 'Cod. Mat'. "10
+  <w_fcat>-seltext_m = 'Código Material'. "20
+  <w_fcat>-seltext_l = 'Código de Material'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'MAKTX'.
+  <w_fcat>-seltext_s = 'Des Mat'. "10
+  <w_fcat>-seltext_m = 'Descrição Material'. "20
+  <w_fcat>-seltext_l = 'Descrição do Material'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'ZLSCH'.
+  <w_fcat>-seltext_s = 'Frm Pagto'. "10
+  <w_fcat>-seltext_m = 'Forma Pagto'. "20
+  <w_fcat>-seltext_l = 'Forma de Pagamento'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'LTEXT'.
+  <w_fcat>-seltext_s = 'Desc Pagto'. "10
+  <w_fcat>-seltext_m = 'Descrição Pagto'. "20
+  <w_fcat>-seltext_l = 'Descrição do Frm Pagto'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'BLART'.
+  <w_fcat>-seltext_s = 'Tp Doc'. "10
+  <w_fcat>-seltext_m = 'Tipo Documento'. "20
+  <w_fcat>-seltext_l = 'Tipo de Documento'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'HBKID'.
+  <w_fcat>-seltext_s = 'Banco Emp'. "10
+  <w_fcat>-seltext_m = 'Banco Empresa'. "20
+  <w_fcat>-seltext_l = 'Banco Empresa'. "40
+
+  APPEND INITIAL LINE TO t_fcat ASSIGNING <w_fcat>.
+  <w_fcat>-fieldname = <w_fcat>-rollname  = 'HKTID'.
+  <w_fcat>-seltext_s = 'ID Conta'. "10
+  <w_fcat>-seltext_m = 'ID Conta Corrente'. "20
+  <w_fcat>-seltext_l = 'ID da Conta Corrente'. "40
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  Status de Campo
+*&---------------------------------------------------------------------*
+FORM zf_status_gui USING rt_extab TYPE slis_t_extab.
+
+  SET PF-STATUS 'ZF_STATUS_GUI'.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  ZF_USER_COMMAND
+*&---------------------------------------------------------------------*
+FORM zf_user_command  USING pv_ucomm    LIKE sy-ucomm
+                        pf_selfield TYPE slis_selfield.
+  DATA: gd_repid LIKE sy-repid,
+        ref_grid TYPE REF TO cl_gui_alv_grid.
+
+  IF ref_grid IS INITIAL.
+    CALL FUNCTION 'GET_GLOBALS_FROM_SLVC_FULLSCR'
+      IMPORTING
+        e_grid = ref_grid.
+  ENDIF.
+
+  IF NOT ref_grid IS INITIAL.
+    CALL METHOD ref_grid->check_changed_data .
+  ENDIF.
+
+  FREE t_kunnr_sel[].
+  REFRESH  t_kunnr_sel[].
+  LOOP AT t_output INTO w_output WHERE selected EQ abap_true.
+    w_kunnr_sel-kunnr =  w_output-kunnr.
+    ADD 1 TO w_kunnr_sel-count.
+    COLLECT  w_kunnr_sel INTO t_kunnr_sel.
+    CLEAR w_kunnr_sel.
+  ENDLOOP.
+
+  " Notificação de Cliente
+  IF pv_ucomm EQ 'LANCA'.
+
+    PERFORM f_envia_notificacao_cliente.
+
+    " Envia Cobrança
+  ELSEIF pv_ucomm EQ 'ENVIA'.
+    PERFORM f_notifica_cobranca.
+
+    " Abre FB03 do documento que está em processamento.
+  ELSEIF pv_ucomm EQ '&IC1'.
+
+    IF pf_selfield-sel_tab_field+2(7) EQ 'BELNR'.
+
+      READ TABLE t_output INTO w_output INDEX pf_selfield-tabindex.
+
+      IF w_output-belnr IS NOT INITIAL.
+
+        SET PARAMETER ID: 'GJR' FIELD w_output-gjahr.
+        SET PARAMETER ID: 'BUK' FIELD w_output-bukrs.
+        SET PARAMETER ID: 'BLN' FIELD pf_selfield-value.
+
+        CALL TRANSACTION 'FB03' AND SKIP FIRST SCREEN.
+
+      ENDIF.
+
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_ENVIA_NOTIFICACAO_CLIENTE
+*&---------------------------------------------------------------------*
+
+FORM f_envia_notificacao_cliente .
+
+
+  LOOP AT  t_kunnr_sel INTO w_kunnr_sel.
+
+    IF w_kunnr_sel-count GT 1. " Tiver mais de um item do mesmo cliente selecionado
+
+      PERFORM f_envia_ted_transf_mass USING w_kunnr_sel.
+    ELSE.
+      PERFORM f_envia_ted_transf USING w_kunnr_sel.
+    ENDIF.
+
+  ENDLOOP.
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_ENVIA_TED_TRANSF_MASS
+*&---------------------------------------------------------------------*
+FORM f_envia_ted_transf_mass  USING    w_kunnr_sel TYPE ty_kunnr.
+
+  DATA  t_fechamento_sel TYPE TABLE OF zbp_s_zfir0099.
+  DATA  g_fechamento_sel TYPE  zbp_s_zfir0099.
+  DATA  t_solix TYPE zttattachments.
+  DATA  t_solix_aux TYPE zttattachments.
+
+  REFRESH: t_fechamento_sel[], t_solix, t_solix_aux.
+
+  LOOP AT t_output INTO DATA(gs_output) WHERE kunnr = w_kunnr_sel-kunnr AND selected EQ abap_true.
+
+    READ TABLE t_bsid INTO DATA(gs_bsid) WITH KEY bukrs = gs_output-bukrs
+                                                  kunnr = gs_output-kunnr
+                                                  gjahr = gs_output-gjahr
+                                                  belnr = gs_output-belnr
+                                                  buzei = gs_output-buzei.
+
+    IF sy-subrc IS INITIAL.
+      IF gs_bsid-vbeln IS NOT INITIAL.
+
+        MOVE-CORRESPONDING gs_output TO g_fechamento_sel.
+
+        g_fechamento_sel-dmbtr = gs_output-wrbtr.
+        CONCATENATE gs_output-gjahr gs_output-monat INTO g_fechamento_sel-anomes. CONDENSE g_fechamento_sel-anomes NO-GAPS.
+        APPEND g_fechamento_sel TO t_fechamento_sel.
+        CLEAR g_fechamento_sel.
+
+        REFRESH t_solix_aux.
+        CALL FUNCTION 'ZFI_ENVIA_RECIBO_ATTACHS'
+          EXPORTING
+            im_vbeln = gs_bsid-vbeln
+            im_bsid  = gs_bsid
+          TABLES
+            t_solix  = t_solix_aux
+            t_return = t_msg_aux.
+        APPEND LINES OF t_solix_aux TO t_solix.
+
+      ELSE.
+        MESSAGE i000(zfi) WITH 'Cliente:' gs_output-kunnr 'não possue Doc.faturamento' gs_output-belnr.
+      ENDIF.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  IF t_solix IS NOT INITIAL.
+    CALL FUNCTION 'ZFI_ENVIA_RECIBO_MASS'
+      EXPORTING
+        im_vbeln         = gs_bsid-vbeln
+        im_bsid          = gs_bsid
+      TABLES
+        t_fechamento_sel = t_fechamento_sel
+        t_solix          = t_solix
+        t_return         = t_msg_aux.
+  ENDIF.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_ENVIA_TED_TRANSF
+*&---------------------------------------------------------------------*
+FORM f_envia_ted_transf  USING   w_kunnr_sel TYPE ty_kunnr.
+
+  LOOP AT t_output INTO DATA(gs_output) WHERE kunnr = w_kunnr_sel-kunnr AND selected EQ abap_true.
+
+    READ TABLE t_bsid INTO DATA(gs_bsid) WITH KEY bukrs = gs_output-bukrs
+                                                  kunnr = gs_output-kunnr
+                                                  gjahr = gs_output-gjahr
+                                                  belnr = gs_output-belnr
+                                                  buzei = gs_output-buzei.
+    IF sy-subrc EQ 0.
+      IF gs_bsid-vbeln IS NOT INITIAL.
+
+        CALL FUNCTION 'ZFI_ENVIA_RECIBO'
+          EXPORTING
+            im_vbeln = gs_bsid-vbeln
+            im_bsid  = gs_bsid
+          TABLES
+            t_return = t_msg_aux.
+      ELSE.
+        MESSAGE i000(zfi) WITH 'Cliente:' gs_output-kunnr 'não possue Doc.faturamento' gs_output-belnr.
+      ENDIF.
+    ENDIF.
+
+
+  ENDLOOP.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_NOTIFICA_COBRANCA
+*&---------------------------------------------------------------------*
+FORM f_notifica_cobranca .
+
+  LOOP AT  t_kunnr_sel INTO w_kunnr_sel.
+
+    IF w_kunnr_sel-count GT 1. " Tiver mais de um item do mesmo cliente selecionado
+
+      PERFORM f_envia_ted_transf_nc_mass USING w_kunnr_sel.
+    ELSE.
+      PERFORM f_envia_ted_transf_nc USING w_kunnr_sel.
+
+    ENDIF.
+
+  ENDLOOP.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_ENVIA_TED_TRANSF_NC_MASS
+*&---------------------------------------------------------------------*
+FORM f_envia_ted_transf_nc_mass  USING    w_kunnr_sel TYPE ty_kunnr.
+
+  DATA  t_fechamento_sel TYPE TABLE OF zbp_s_zfir0099.
+  DATA  g_fechamento_sel TYPE  zbp_s_zfir0099.
+  DATA  t_solix TYPE zttattachments.
+  DATA  t_solix_aux TYPE zttattachments.
+
+  REFRESH: t_fechamento_sel[], t_solix, t_solix_aux.
+
+  LOOP AT t_output INTO DATA(gs_output) WHERE kunnr = w_kunnr_sel-kunnr AND selected EQ abap_true.
+
+    READ TABLE t_bsid INTO DATA(gs_bsid) WITH KEY bukrs = gs_output-bukrs
+                                                  kunnr = gs_output-kunnr
+                                                  gjahr = gs_output-gjahr
+                                                  belnr = gs_output-belnr
+                                                  buzei = gs_output-buzei.
+
+    IF sy-subrc IS INITIAL.
+      IF gs_bsid-vbeln IS NOT INITIAL.
+
+        MOVE-CORRESPONDING gs_output TO g_fechamento_sel.
+
+        g_fechamento_sel-dmbtr = gs_output-wrbtr.
+        CONCATENATE gs_output-gjahr gs_output-monat INTO g_fechamento_sel-anomes. CONDENSE g_fechamento_sel-anomes NO-GAPS.
+        APPEND g_fechamento_sel TO t_fechamento_sel.
+        CLEAR g_fechamento_sel.
+
+        REFRESH t_solix_aux.
+        CALL FUNCTION 'ZFI_ENVIA_RECIBO_ATTACHS'
+          EXPORTING
+            im_vbeln = gs_bsid-vbeln
+            im_bsid  = gs_bsid
+          TABLES
+            t_solix  = t_solix_aux
+            t_return = t_msg_aux.
+        APPEND LINES OF t_solix_aux TO t_solix.
+
+      ELSE.
+        MESSAGE i000(zfi) WITH 'Cliente:' gs_output-kunnr 'não possue Doc.faturamento' gs_output-belnr.
+      ENDIF.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  IF t_solix IS NOT INITIAL.
+    CALL FUNCTION 'ZFI_ENVIA_RECIBO_MASS'
+      EXPORTING
+        im_vbeln         = gs_bsid-vbeln
+        im_bsid          = gs_bsid
+      TABLES
+        t_fechamento_sel = t_fechamento_sel
+        t_solix          = t_solix
+        t_return         = t_msg_aux.
+  ENDIF.
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  F_ENVIA_TED_TRANSF_NC
+*&---------------------------------------------------------------------*
+FORM f_envia_ted_transf_nc  USING    w_kunnr_sel TYPE ty_kunnr.
+
+  LOOP AT t_output INTO DATA(gs_output) WHERE kunnr = w_kunnr_sel-kunnr AND selected EQ abap_true.
+
+    READ TABLE t_bsid INTO DATA(gs_bsid) WITH KEY bukrs = gs_output-bukrs
+                                                  kunnr = gs_output-kunnr
+                                                  gjahr = gs_output-gjahr
+                                                  belnr = gs_output-belnr
+                                                  buzei = gs_output-buzei.
+    IF sy-subrc EQ 0.
+      IF gs_bsid-vbeln IS NOT INITIAL.
+
+        CALL FUNCTION 'ZFI_ENVIA_RECIBO'
+          EXPORTING
+            im_vbeln = gs_bsid-vbeln
+            im_bsid  = gs_bsid
+          TABLES
+            t_return = t_msg_aux.
+      ELSE.
+        MESSAGE i000(zfi) WITH 'Cliente:' gs_output-kunnr 'não possue Doc.faturamento' gs_output-belnr.
+      ENDIF.
+    ENDIF.
+
+
+  ENDLOOP.
+
+ENDFORM.
